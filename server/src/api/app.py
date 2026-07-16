@@ -4,21 +4,20 @@ from time import perf_counter
 
 from fastapi import FastAPI, HTTPException
 import torch
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer
 from pydantic import BaseModel, Field
 
-from server.src.config import MODEL_NAME, LENGTH_SETTINGS, format_duration
+from server.src.config import MODEL_NAME, format_duration, CHUNK_BATCH_SIZE
 from server.src.services.summarizer import summarize_text
+from server.src.services.logger import logger
 
 summarizer = None
+tokenizer = None
 gpu_enabled: bool = False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global summarizer
-    global gpu_enabled
-
-    print("TextSummaryML is starting up!")
+    logger.info("TextSummaryML is starting up!")
 
     stopwatch_start = perf_counter()
 
@@ -27,14 +26,18 @@ async def lifespan(app: FastAPI):
     device_name = "CPU"
     if torch.cuda.is_available():
         device = 0
-        gpu_enabled = True
+        app.state.gpu_enabled = True
 
         backend = "AMD ROCm" if torch.version.hip else "NVIDIA CUDA"
         device_name = torch.cuda.get_device_name(0)
     else:
         device = -1
+        CHUNK_BATCH_SIZE = 1
 
-    print(f"Using {"GPU" if gpu_enabled else "CPU"}")
+    logger.info(f"Using {"GPU" if gpu_enabled else "CPU"}")
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    logger.info("Tokenizer ready!")
 
     summarizer = pipeline(
         task="summarization",
@@ -42,15 +45,21 @@ async def lifespan(app: FastAPI):
         device=device,
     )
 
+    logger.info("Summarizer ready!")
+
     training_seconds = perf_counter() - stopwatch_start
     training_duration = format_duration(training_seconds)
 
-    print(f"TextSummaryML is start up in {training_duration}")
-    print(f"\nModel: {MODEL_NAME} \n{"GPU" if gpu_enabled else "CPU"} Enabled\nBackend {backend}\nDevice {device_name}")
+    logger.info(f"TextSummaryML started up in {training_duration}")
+    logger.info(f"\nModel: {MODEL_NAME} \n{"GPU" if gpu_enabled else "CPU"} Enabled\nBackend {backend}\nDevice {device_name}")
+
+    app.state.tokenizer = tokenizer
+    app.state.summarizer = summarizer
 
     yield
 
-    summarizer = None
+    app.state.tokenizer = None
+    app.state.summarizer = None
 
 app = FastAPI(
     title="TextSummaryML",
@@ -64,13 +73,15 @@ class Request(BaseModel):
         max_length=50_000,
         description="Text to summarize.",
     )
-    length: Literal["short", "medium", "long"] = "medium"
+    length: Literal["short", "medium", "long", "extra-long"] = "medium"
 
 class Response(BaseModel):
     summary: str
     input_characters: int
     summary_characters: int
     model: str
+    total_chunks: int
+    duration: str
 
 @app.get("/api/health")
 def health():
@@ -83,22 +94,29 @@ def health():
 
 @app.post("/api/summarize", response_model=Response)
 def summarize(request: Request):
-    if summarizer is None:
+    if app.state.summarizer is None:
         raise HTTPException(
             status_code=503,
             detail="Model is not available",
         )
 
-    print(f"New summary request of {len(request.text)} characters")
+    logger.info(f"New summary request of {len(request.text)} characters")
 
     try:
-        summary = summarize_text(request.text, request.length, summarizer)
+        summary = summarize_text(
+            request.text, 
+            request.length, 
+            app.state.summarizer, 
+            app.state.tokenizer,
+        )
 
         return Response(
-            summary=summary,
+            summary=summary.summary,
             input_characters=len(request.text),
-            summary_characters=len(summary),
-            model=MODEL_NAME
+            summary_characters=len(summary.summary),
+            model=MODEL_NAME,
+            total_chunks=summary.total_chunks,
+            duration=summary.summarization_duration
         )
 
     except Exception as ex:
