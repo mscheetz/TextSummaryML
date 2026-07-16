@@ -14,7 +14,8 @@ FastAPI-powered text summarization service using Hugging Face transformers. Supp
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/health` | Health check, model status, GPU availability |
-| `POST` | `/api/summarize` | Summarize text (50–50,000 chars) |
+| `POST` | `/api/summarize/text` | Summarize text (50–50,000 chars) |
+| `POST` | `/api/summarize/web` | Summarize web page |
 
 ### Summarize Request
 
@@ -43,6 +44,7 @@ FastAPI-powered text summarization service using Hugging Face transformers. Supp
 ## How It Works
 
 1. Text is tokenized and split into 900-token chunks with 80-token overlap
+   - Web pages have html -> markdown before this step
 2. Each chunk is summarized independently (batch size: 8)
 3. If combined summaries still exceed the token limit, the process recurses
 4. A final pass produces the summary at the requested length

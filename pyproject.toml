@@ -12,6 +12,8 @@ dependencies = [
     "triton-rocm; sys_platform == 'linux'",
     "transformers>=4.46,<5",
     "uvicorn[standard]>=0.51.0",
+    "httpx>=0.28.1",
+    "trafilatura>=2.1.0",
 ]
 
 [tool.uv.sources]
